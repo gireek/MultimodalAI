@@ -9,10 +9,6 @@ import os
 from PIL import Image
 
 
-# download the flickr8k data which is ~8k images with 5 captions each
-path = kagglehub.dataset_download("adityajn105/flickr8k")
-imgs_path = os.path.join(path, "Images")
-captions_path = os.path.join(path, "captions.txt")
 
 
 def clean_text(text):

@@ -43,6 +43,8 @@ scaler = GradScaler()  # for mixed precision
 num_epochs = 15
 grad_accum_steps = 1  # set >1 if you need to accumulate gradients
 
+
+# start training
 for epoch in range(num_epochs):
     model.train()
     total_loss = 0.0
@@ -91,3 +93,4 @@ for epoch in range(num_epochs):
         avg_val_loss = total_val_loss / len(val_loader)
         print(f"Epoch {epoch+1} Validation Loss: {avg_val_loss:.4f}")
 
+torch.save(model.state_dict(), "caption_model.pt")

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def inference_val(model, val_loader, device, max_length):
+def inference_val(model, val_loader, device, max_length, reverse_vocab):
 
     for image, captions in val_loader:
         print(image.shape, captions.shape)
@@ -19,11 +19,10 @@ def inference_val(model, val_loader, device, max_length):
             next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(1)  # Shape: [batch_size, 1]
             generated_tokens = torch.cat((generated_tokens, next_token), dim=1)
 
-            # Check if all sequences have ended with EOS
-            if (next_token == 2).all():
-                break
+    pred_captions = []
+    for i in generated_tokens:
+        # ignore <bos> and go till <eos>
+        pred = [reverse_vocab[idx.item()] for idx in generated_tokens[i, 1:] if idx.item() != 2 ]
+        pred_captions.append(pred)
 
-        return generated_tokens
-
-
-
+    return pred_captions

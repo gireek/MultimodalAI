@@ -1,11 +1,12 @@
+from torch.utils.data import Dataset
+from torchvision import transforms
+import torch
 
 
 class vqaDataset(Dataset):
+
     def __init__(self, ds, transform=None, max_length=None):
         """
-        images_dir: directory with Flickr8k images
-        captions_file: path to file containing image filenames and captions
-        vocab: optional pre-built vocabulary (a dict mapping token to index)
         transform: image transformations (resize, normalize, etc.)
         max_length: max caption length (including <bos> and <eos>) for padding
         """
@@ -45,39 +46,26 @@ class vqaDataset(Dataset):
                 self.vocab[tok] = len(self.vocab)
         return tokens
 
+
     def __len__(self):
         return len(self.questions)
+
+
+    def encode_and_pad(self, tokens):
+        indices = [self.vocab.get(tok, self.vocab["<unk>"]) for tok in tokens]
+
+        # pad with 0 if less than max_length
+        if len(indices) < self.max_length:
+            indices += [0] * (self.max_length - len(indices))
+
+        return torch.tensor(indices, dtype=torch.long)
 
 
     def __getitem__(self, idx):
         image_index = self.images[idx]
         image_tensor = self.transform(self.ds['validation'][image_index]['image'])
 
-
-
-        question_tokens = self.questions[idx]
-        question_indices = [self.vocab.get(tok) for tok in question_tokens]
-
-        # pad with 0 if less than max_length
-        if len(question_indices) < self.max_length:
-            question_indices += [0] * (self.max_length - len(question_indices))
-
-        question_tensor = torch.tensor(question_indices, dtype=torch.long)
-
-
-
-
-        answer_tokens = self.answers[idx]
-        answer_indices = [self.vocab.get(tok) for tok in answer_tokens]
-
-        # pad with 0 if less than max_length
-        if len(answer_indices) < self.max_length:
-            answer_indices += [0] * (self.max_length - len(answer_indices))
-
-        answer_tensor = torch.tensor(answer_indices, dtype=torch.long)
-
+        question_tensor = self.encode_and_pad(self.questions[idx])
+        answer_tensor = self.encode_and_pad(self.answers[idx])
 
         return image_tensor, question_tensor, answer_tensor
-
-
-

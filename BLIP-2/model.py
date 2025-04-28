@@ -1,3 +1,10 @@
+import torch
+from torch import nn
+import torch.nn.functional as F
+import timm
+from qFormer import QFormer
+
+
 class blip_vqa(nn.Module):
   def __init__(self, vocab_size, num_queries=8,
                hidden_dim=384, nhead = 8,

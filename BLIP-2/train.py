@@ -1,71 +1,91 @@
 from torch.utils.data import Dataset
 from torchvision import transforms
 import torch
+from torch import nn
+from datasets import load_dataset
+from dataset_collate import VQADataset, collate_fn
+from torch.utils.data import random_split
+from model import blip_vqa
+from torch import optim
+from torch.cuda.amp import autocast, GradScaler
 
 
-class vqaDataset(Dataset):
 
-    def __init__(self, ds, transform=None, max_length=None):
-        """
-        transform: image transformations (resize, normalize, etc.)
-        max_length: max caption length (including <bos> and <eos>) for padding
-        """
-        self.transform = transform if transform is not None else transforms.Compose([
-            transforms.Resize((224, 224)),                     # resize image
-            transforms.ToTensor(),                             # convert to tensor [C x H x W]
-            transforms.Lambda(lambda image: image.repeat(3, 1, 1) if image.shape[0] == 1 else image),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],   # normalize to ImageNet mean/std
-                                 std=[0.229, 0.224, 0.225])
-        ])
+ds = load_dataset("merve/vqav2-small")
+data = VQADataset(ds)
+train_size = int(0.97 * len(data))
+val_size = len(data) - train_size
 
-        self.questions = []
-        self.answers = []
-        self.images = []
-        self.all_tokens = []
+train_dataset, val_dataset = random_split(data, [train_size, val_size])
+print(f"Training dataset size: {len(train_dataset)}")
+print(f"Validation dataset size: {len(val_dataset)}")
 
-        self.vocab = {"<pad>": 0, "<bos>": 1, "<eos>": 2, "<unk>": 3}
-        self.ds = ds["validation"]
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4, collate_fn=collate_fn)
+val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4, collate_fn=collate_fn)
+
+max_qn_len = max([len(q) for q in data.questions])
+max_ans_len = max([len(a) for a in data.answers])
+vocab_size = len(data.vocab)
 
 
-        for i, question_answer in enumerate(ds):
-          question = question_answer["question"][:-1]
-          answer = question_answer["multiple_choice_answer"]
 
-          self.questions.append(self.tokenize(question))
-          self.answers.append(self.tokenize(answer))
-          self.images.append(i)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = blip_vqa(vocab_size, max_qn_len, max_ans_len).to(device)
 
-        self.rev_vocab = {idx: tok for tok, idx in self.vocab.items()}
-        self.max_length = max(len(tokens) for tokens in self.questions)
+criterion = nn.CrossEntropyLoss(ignore_index=0)
+optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.05)
+scaler = GradScaler()  # for mixed precision
+num_epochs = 10
+grad_accum_steps = 1  # set >1 if you need to accumulate gradients
 
+for epoch in range(num_epochs):
+    model.train()
+    total_loss = 0.0
 
-    def tokenize(self, text):
-        tokens = ["<bos>"] + text.lower().strip().split() + ["<eos>"]
-        for tok in tokens:
-            if tok not in self.vocab:
-                self.vocab[tok] = len(self.vocab)
-        return tokens
+    for batch_idx, (images, questions, answers) in enumerate(train_loader):
+        images = images.to(device)
+        questions = questions.to(device)
+        answers = answers.to(device)
 
+        answers_in = answers[:, :-1]   # decoder input
+        answers_out = answers[:, 1:]   # labels
 
-    def __len__(self):
-        return len(self.questions)
+        with autocast(): # Forward pass with mixed precision
+            logits = model(images, questions, answers_in, device)  # [batch, seq_len-1, vocab_size]
+            loss = criterion(logits.view(-1, logits.size(-1)), answers_out.reshape(-1))
 
+        # Backpropagation
+        scaler.scale(loss).backward()
+        # Gradient accumulation: if we've done accum_steps forward passes, or if last batch, step optimizer
+        if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(train_loader):
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+        total_loss += loss.item()
 
-    def encode_and_pad(self, tokens):
-        indices = [self.vocab.get(tok, self.vocab["<unk>"]) for tok in tokens]
+        if (batch_idx) % 100 == 0:
+            avg_loss = total_loss / (batch_idx + 1)
+            print(f"Epoch {epoch+1} Batch {batch_idx+1}/{len(train_loader)} - Avg Loss: {avg_loss:.4f}")
+    avg_train_loss = total_loss / len(train_loader)
+    print(f"Epoch {epoch+1} Training Loss: {avg_train_loss:.4f}")
 
-        # pad with 0 if less than max_length
-        if len(indices) < self.max_length:
-            indices += [0] * (self.max_length - len(indices))
+    with torch.no_grad():
+        model.eval()
+        total_val_loss = 0.0
 
-        return torch.tensor(indices, dtype=torch.long)
+        for batch_idx, (images, questions, answers) in enumerate(val_loader):
+          images = images.to(device)
+          questions = questions.to(device)
+          answers = answers.to(device)
 
+          answers_in = answers[:, :-1]
+          answers_out = answers[:, 1:] 
 
-    def __getitem__(self, idx):
-        image_index = self.images[idx]
-        image_tensor = self.transform(self.ds['validation'][image_index]['image'])
+          with autocast(): # Forward pass with mixed precision
+              logits = model(images, questions, answers_in, device)  # [batch, seq_len-1, vocab_size]
+              loss = criterion(logits.view(-1, logits.size(-1)), answers_out.reshape(-1))
 
-        question_tensor = self.encode_and_pad(self.questions[idx])
-        answer_tensor = self.encode_and_pad(self.answers[idx])
+          total_val_loss += loss.item()
 
-        return image_tensor, question_tensor, answer_tensor
+        avg_val_loss = total_val_loss / len(val_loader)
+        print(f"Epoch {epoch+1} Validation Loss: {avg_val_loss:.4f}")
